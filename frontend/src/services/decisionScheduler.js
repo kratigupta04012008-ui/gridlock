@@ -18,7 +18,7 @@ export class DecisionScheduler {
     fetchDecisionsFn,
     onApplyActions,
     clockPolicy = 'lockstep',
-    decisionIntervalSteps = 50, // 1.0 second at 50 Hz (50 steps of 0.02s)
+    decisionIntervalSteps = 250, // 5.0s at 50 Hz (12 RPM, safely within Gemini Free Tier 15 RPM limit)
     maxConsecutiveFailures = 3,
   }) {
     this.fetchDecisions = fetchDecisionsFn
@@ -32,8 +32,10 @@ export class DecisionScheduler {
     this.isRequestInFlight = false
     this.consecutiveFailures = 0
     this.skippedTicks = 0
-    this.status = 'idle' // 'idle' | 'running' | 'requesting' | 'halted' | 'uncontrolled'
+    this.status = 'idle' // 'idle' | 'running' | 'requesting' | 'halted' | 'uncontrolled' | 'rate_limited'
     this.lastError = null
+    this.rateLimitCooldownUntil = null
+    this.rateLimitRetrySeconds = null
 
     // Latency & Telemetry stats
     this.lastDecisions = null
@@ -72,6 +74,8 @@ export class DecisionScheduler {
     this.skippedTicks = 0
     this.status = 'idle'
     this.lastError = null
+    this.rateLimitCooldownUntil = null
+    this.rateLimitRetrySeconds = null
     this.lastDecisions = null
     this.lastProviderLatencyMs = null
     this.lastRoundTripMs = null
@@ -80,6 +84,14 @@ export class DecisionScheduler {
     this.lastTriggeredStep = -1
     this.currentSimTime = 0
     this.decisionAgeMs = 0
+  }
+
+  resume() {
+    this.consecutiveFailures = 0
+    this.status = 'running'
+    this.lastError = null
+    this.rateLimitCooldownUntil = null
+    this.rateLimitRetrySeconds = null
   }
 
   /**
@@ -93,6 +105,23 @@ export class DecisionScheduler {
 
     if (this.status === 'halted') {
       return { shouldStepEngine: false, requestTriggered: false }
+    }
+
+    // Check if we are currently cooling down from a 429 rate limit
+    if (this.status === 'rate_limited') {
+      if (this.rateLimitCooldownUntil && Date.now() < this.rateLimitCooldownUntil) {
+        // Still cooling down: in lockstep pause physics, in realtime let physics roll
+        return {
+          shouldStepEngine: this.clockPolicy !== 'lockstep',
+          requestTriggered: false,
+        }
+      } else {
+        // Cooldown period expired! Resume normal operations
+        this.status = 'running'
+        this.rateLimitCooldownUntil = null
+        this.rateLimitRetrySeconds = null
+        this.consecutiveFailures = 0
+      }
     }
 
     // In lockstep mode, if a request is in flight, freeze the engine
@@ -151,6 +180,8 @@ export class DecisionScheduler {
       // Success! Reset failure count
       this.consecutiveFailures = 0
       this.lastError = null
+      this.rateLimitCooldownUntil = null
+      this.rateLimitRetrySeconds = null
       this.lastDecisions = response.decisions
       this.lastProviderLatencyMs = response.providerLatencyMs
       this.lastRoundTripMs = response.roundTripLatencyMs
@@ -168,13 +199,27 @@ export class DecisionScheduler {
         return
       }
 
-      this.consecutiveFailures++
-      this.lastError = err.message || 'Unknown decision error'
+      const isRateLimit =
+        err.message &&
+        /(?:429|quota|resource_exhausted|rate.limit)/i.test(err.message)
 
-      if (this.consecutiveFailures >= this.maxConsecutiveFailures) {
-        this.status = 'halted'
+      if (isRateLimit) {
+        // Extract retry seconds from error message if available (e.g. "Please retry in 14.1s")
+        const match = err.message.match(/retry in\s+([0-9.]+)\s*s/i)
+        const retrySec = match ? Math.ceil(parseFloat(match[1])) + 2 : 15
+        this.rateLimitCooldownUntil = Date.now() + retrySec * 1000
+        this.rateLimitRetrySeconds = retrySec
+        this.status = 'rate_limited'
+        this.lastError = `Gemini Free Tier 15 RPM quota limit reached. Cooldown in progress (resumes automatically in ~${retrySec}s). Recommended: switch to 5.0s (12 RPM) interval.`
       } else {
-        this.status = 'uncontrolled'
+        this.consecutiveFailures++
+        this.lastError = err.message || 'Unknown decision error'
+
+        if (this.consecutiveFailures >= this.maxConsecutiveFailures) {
+          this.status = 'halted'
+        } else {
+          this.status = 'uncontrolled'
+        }
       }
     } finally {
       this.isRequestInFlight = false
@@ -195,6 +240,9 @@ export class DecisionScheduler {
       lastRoundTripMs: this.lastRoundTripMs,
       lastError: this.lastError,
       lastDecisionStep: this.lastDecisionStep,
+      rateLimitCooldownUntil: this.rateLimitCooldownUntil,
+      rateLimitRetrySeconds: this.rateLimitRetrySeconds,
+      decisionIntervalSteps: this.decisionIntervalSteps,
     }
   }
 }

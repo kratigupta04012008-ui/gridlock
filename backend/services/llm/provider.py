@@ -115,9 +115,21 @@ class GeminiProvider(BaseLLMProvider):
             latency_ms = (time.perf_counter() - t0) * 1000.0
 
             if response.status_code != 200:
+                error_msg = response.text
+                status_code = 429 if response.status_code == 429 else 502
+                try:
+                    err_json = response.json()
+                    raw_msg = err_json.get("error", {}).get("message", "")
+                    if response.status_code == 429:
+                        error_msg = f"Gemini Free Tier quota exceeded (15 RPM limit): {raw_msg}"
+                    elif raw_msg:
+                        error_msg = f"Gemini API error ({response.status_code}): {raw_msg}"
+                except Exception:
+                    pass
+
                 raise LLMProviderError(
-                    f"Gemini API returned status {response.status_code}: {response.text}",
-                    status_code=502,
+                    f"Gemini API returned status {response.status_code}: {error_msg}",
+                    status_code=status_code,
                     raw_response=response.text,
                 )
 
