@@ -1,0 +1,80 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "BatchDecisionResponse",
+  "description": "Strict JSON schema for batch vehicle action decisions from the LLM provider.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["decisions"],
+  "properties": {
+    "decisions": {
+      "type": "array",
+      "description": "Array of decisions, one per active vehicle.",
+      "items": {
+        "$ref": "#/definitions/VehicleDecision"
+      }
+    }
+  },
+  "definitions": {
+    "VehicleDecision": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "action", "throttle"],
+          "properties": {
+            "id": {
+              "type": "integer",
+              "description": "Opaque routing key matching the vehicle report ID"
+            },
+            "action": {
+              "type": "string",
+              "enum": ["ACCELERATE"]
+            },
+            "throttle": {
+              "type": "number",
+              "minimum": 0.0,
+              "maximum": 1.0,
+              "description": "Throttle fraction [0.0, 1.0] representing fraction of max acceleration"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "action", "intensity"],
+          "properties": {
+            "id": {
+              "type": "integer",
+              "description": "Opaque routing key matching the vehicle report ID"
+            },
+            "action": {
+              "type": "string",
+              "enum": ["BRAKE"]
+            },
+            "intensity": {
+              "type": "number",
+              "minimum": 0.0,
+              "maximum": 1.0,
+              "description": "Braking fraction [0.0, 1.0] representing fraction of max braking"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["id", "action"],
+          "properties": {
+            "id": {
+              "type": "integer",
+              "description": "Opaque routing key matching the vehicle report ID"
+            },
+            "action": {
+              "type": "string",
+              "enum": ["MAINTAIN"]
+            }
+          }
+        }
+      ]
+    }
+  }
+}

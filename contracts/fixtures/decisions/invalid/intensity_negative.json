@@ -1,0 +1,9 @@
+{
+  "decisions": [
+    {
+      "id": 1,
+      "action": "BRAKE",
+      "intensity": -0.1
+    }
+  ]
+}

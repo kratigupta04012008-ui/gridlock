@@ -1,0 +1,127 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "TelemetryBatch",
+  "description": "Strict local telemetry batch for all active vehicles. No global coordinates or omniscient state permitted.",
+  "type": "array",
+  "items": {
+    "$ref": "#/definitions/VehicleTelemetryReport"
+  },
+  "definitions": {
+    "VehicleTelemetryReport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "front", "rear", "side", "signal"],
+      "properties": {
+        "id": {
+          "type": "integer",
+          "description": "Opaque routing key matching the vehicle response; never referenced by other fields"
+        },
+        "front": {
+          "description": "Forward sensor reporting nearest vehicle bumper-to-bumper gap and relative velocity",
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["distance", "relativeVelocity"],
+              "properties": {
+                "distance": {
+                  "type": "number",
+                  "minimum": 0,
+                  "description": "Bumper-to-bumper gap in meters, clamped to 0 on contact"
+                },
+                "relativeVelocity": {
+                  "type": "number",
+                  "description": "Rate of change of gap in m/s: negative = closing (danger), positive = opening"
+                }
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "rear": {
+          "description": "Rearward sensor reporting nearest vehicle bumper-to-bumper gap and relative velocity",
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["distance", "relativeVelocity"],
+              "properties": {
+                "distance": {
+                  "type": "number",
+                  "minimum": 0,
+                  "description": "Bumper-to-bumper gap in meters, clamped to 0 on contact"
+                },
+                "relativeVelocity": {
+                  "type": "number",
+                  "description": "Rate of change of gap in m/s: negative = closing (danger), positive = opening"
+                }
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "side": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["left", "right"],
+          "description": "Lateral side-to-side clearance in meters to nearest vehicle in blind-spot/lane zones",
+          "properties": {
+            "left": {
+              "oneOf": [
+                {
+                  "type": "number",
+                  "minimum": 0,
+                  "description": "Left lateral clearance in meters"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "right": {
+              "oneOf": [
+                {
+                  "type": "number",
+                  "minimum": 0,
+                  "description": "Right lateral clearance in meters"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          }
+        },
+        "signal": {
+          "description": "Traffic signal state and distance to approach stop line in meters",
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["state", "distanceToStopLine"],
+              "properties": {
+                "state": {
+                  "type": "string",
+                  "enum": ["RED", "YELLOW", "GREEN"],
+                  "description": "Current signal lamp state for the governing approach"
+                },
+                "distanceToStopLine": {
+                  "type": "number",
+                  "minimum": 0,
+                  "description": "Distance from front bumper to stop line along approach in meters"
+                }
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    }
+  }
+}

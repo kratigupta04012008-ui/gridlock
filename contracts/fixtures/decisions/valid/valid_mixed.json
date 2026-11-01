@@ -1,0 +1,7 @@
+{
+  "decisions": [
+    { "id": 0, "action": "ACCELERATE", "throttle": 0.8 },
+    { "id": 1, "action": "BRAKE", "intensity": 0.5 },
+    { "id": 2, "action": "MAINTAIN" }
+  ]
+}

@@ -1,0 +1,21 @@
+[
+  {
+    "id": 0,
+    "front": {
+      "distance": 12.4,
+      "relativeVelocity": -1.5
+    },
+    "rear": {
+      "distance": 8.2,
+      "relativeVelocity": 0.4
+    },
+    "side": {
+      "left": 1.8,
+      "right": 2.1
+    },
+    "signal": {
+      "state": "GREEN",
+      "distanceToStopLine": 15.6
+    }
+  }
+]

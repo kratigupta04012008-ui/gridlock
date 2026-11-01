@@ -1,0 +1,16 @@
+{
+  "id": 0,
+  "front": {
+    "distance": 0,
+    "relativeVelocity": -8.2
+  },
+  "rear": {
+    "distance": 0,
+    "relativeVelocity": 8.2
+  },
+  "side": {
+    "left": 1.9,
+    "right": null
+  },
+  "signal": null
+}

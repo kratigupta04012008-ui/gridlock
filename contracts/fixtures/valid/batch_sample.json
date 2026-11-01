@@ -1,0 +1,30 @@
+[
+  {
+    "id": 0,
+    "front": { "distance": 12.0, "relativeVelocity": -0.5 },
+    "rear": null,
+    "side": { "left": null, "right": 2.2 },
+    "signal": { "state": "GREEN", "distanceToStopLine": 18.0 }
+  },
+  {
+    "id": 1,
+    "front": { "distance": 6.5, "relativeVelocity": 0.0 },
+    "rear": { "distance": 7.0, "relativeVelocity": 0.0 },
+    "side": { "left": 1.5, "right": null },
+    "signal": { "state": "GREEN", "distanceToStopLine": 24.5 }
+  },
+  {
+    "id": 2,
+    "front": null,
+    "rear": { "distance": 6.5, "relativeVelocity": 0.0 },
+    "side": { "left": null, "right": null },
+    "signal": { "state": "GREEN", "distanceToStopLine": 31.0 }
+  },
+  {
+    "id": 3,
+    "front": null,
+    "rear": null,
+    "side": { "left": null, "right": null },
+    "signal": null
+  }
+]

@@ -1,0 +1,4 @@
+Current active vehicle telemetry batch:
+{telemetry_json}
+
+Provide the action decisions for all {vehicle_count} vehicles listed above. Return ONLY the JSON object conforming to the decision schema.

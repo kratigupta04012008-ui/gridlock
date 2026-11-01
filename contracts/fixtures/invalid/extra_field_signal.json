@@ -1,0 +1,13 @@
+[
+  {
+    "id": 4,
+    "front": null,
+    "rear": null,
+    "side": { "left": null, "right": null },
+    "signal": {
+      "state": "GREEN",
+      "distanceToStopLine": 12.0,
+      "secondsRemaining": 5.4
+    }
+  }
+]

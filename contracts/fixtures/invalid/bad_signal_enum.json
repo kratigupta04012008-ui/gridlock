@@ -1,0 +1,12 @@
+[
+  {
+    "id": 5,
+    "front": null,
+    "rear": null,
+    "side": { "left": null, "right": null },
+    "signal": {
+      "state": "BLUE",
+      "distanceToStopLine": 12.0
+    }
+  }
+]

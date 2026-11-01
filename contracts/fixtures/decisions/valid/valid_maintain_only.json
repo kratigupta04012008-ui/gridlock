@@ -1,0 +1,12 @@
+{
+  "decisions": [
+    {
+      "id": 1,
+      "action": "MAINTAIN"
+    },
+    {
+      "id": 2,
+      "action": "MAINTAIN"
+    }
+  ]
+}
