@@ -21,14 +21,12 @@ export function ControlBar({
   speed,
   activeControllerName,
   clockPolicy,
-  decisionIntervalSteps = 250,
   onStart,
   onPause,
   onReset,
   onSpeedChange,
   onControllerChange,
   onClockPolicyChange,
-  onDecisionIntervalChange,
 }) {
   const isRunning = status === 'RUNNING'
   const isLLM = activeControllerName === 'llm_batch'
@@ -132,42 +130,20 @@ export function ControlBar({
         </div>
 
         {isLLM && (
-          <>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <label htmlFor="clock-policy-select" className="control-label">
-                Clock Policy:
-              </label>
-              <select
-                id="clock-policy-select"
-                className="controller-select-dropdown"
-                value={clockPolicy}
-                onChange={(e) => onClockPolicyChange && onClockPolicyChange(e.target.value)}
-              >
-                <option value="lockstep">Lockstep (Freeze Sim During Call)</option>
-                <option value="realtime">Realtime (Continuous 50Hz, Track Age)</option>
-              </select>
-            </div>
-
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <label htmlFor="interval-select" className="control-label">
-                Rate:
-              </label>
-              <select
-                id="interval-select"
-                className="controller-select-dropdown"
-                value={decisionIntervalSteps}
-                onChange={(e) =>
-                  onDecisionIntervalChange && onDecisionIntervalChange(Number(e.target.value))
-                }
-                title="Controls how often the LLM is queried. 5.0s is safe for Gemini Free Tier (15 RPM)."
-              >
-                <option value={250}>5.0s (12 RPM — Free Tier Safe)</option>
-                <option value={200}>4.0s (15 RPM — Free Tier Limit)</option>
-                <option value={100}>2.0s (30 RPM — Pay-As-You-Go)</option>
-                <option value={50}>1.0s (60 RPM — High Quota)</option>
-              </select>
-            </div>
-          </>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <label htmlFor="clock-policy-select" className="control-label">
+              Clock Policy:
+            </label>
+            <select
+              id="clock-policy-select"
+              className="controller-select-dropdown"
+              value={clockPolicy}
+              onChange={(e) => onClockPolicyChange && onClockPolicyChange(e.target.value)}
+            >
+              <option value="lockstep">Lockstep (Freeze Sim During Call)</option>
+              <option value="realtime">Realtime (Continuous 50Hz, Track Age)</option>
+            </select>
+          </div>
         )}
 
         <span

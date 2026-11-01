@@ -24,13 +24,14 @@ def test_prompt_contains_no_forbidden_fields():
     user_prompt = compiled["user_prompt"]
     system_prompt = compiled["system_prompt"]
 
-    # Verify expected allowed fields are present
-    assert '"front"' in user_prompt
-    assert '"rear"' in user_prompt
-    assert '"side"' in user_prompt
-    assert '"signal"' in user_prompt
-    assert '"distance"' in user_prompt
-    assert '"relativeVelocity"' in user_prompt
+    # Verify expected allowed sensor fields are defined across system/user prompts
+    full_prompt = system_prompt + user_prompt
+    assert "front" in full_prompt
+    assert "rear" in full_prompt
+    assert "side" in full_prompt
+    assert "signal" in full_prompt
+    assert "Dist" in full_prompt or "distance" in full_prompt
+    assert "RelVel" in full_prompt or "relativeVelocity" in full_prompt
 
     # Extract JSON portion from user_prompt
     # Check that forbidden telemetry keys are NEVER present in telemetry JSON

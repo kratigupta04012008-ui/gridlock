@@ -1,46 +1,47 @@
 /**
  * GRID LOCK — Decision Scheduler & Clock Policy Orchestrator
  *
- * Implements two clock policies:
- * 1. lockstep: Pauses physics advancement while request is in-flight, resumes when decisions arrive.
- * 2. realtime: Physics advances at 50 Hz holding previous actions; in-flight collisions occur naturally;
- *              ticks arriving while request is in-flight are skipped and counted; decision age is tracked.
- *
- * Enforces:
- * - Single-flight requests (never concurrent).
- * - Strictly monotonic, unique tick IDs (never reused).
- * - Halts or marks uncontrolled after consecutive failures (default 3).
- * - Zero artificial fallback or synthetic safety clamping.
+ * Implements Phase 4 timing and concurrency rules:
+ * 1. Exactly ONE batch decision request per decision tick (default every 50 steps = 1.0s, configurable).
+ * 2. Concurrency limit = 1 (no overlapping requests).
+ * 3. Dual Clock Policies:
+ *    - 'lockstep': Simulation clock freezes while request is in-flight (benchmark evaluation).
+ *    - 'realtime': Simulation clock advances at 50 Hz. If response arrives late, applies freshly.
+ * 4. Tracks decision age and consecutive failure thresholds.
+ * 5. Collects rolling token usage (input/output) and latency metrics.
  */
 
+import { fetchDecisions } from './decisionClient.js'
+
 export class DecisionScheduler {
-  constructor({
-    fetchDecisionsFn,
-    onApplyActions,
-    clockPolicy = 'lockstep',
-    decisionIntervalSteps = 250, // 5.0s at 50 Hz (12 RPM, safely within Gemini Free Tier 15 RPM limit)
-    maxConsecutiveFailures = 3,
-  }) {
-    this.fetchDecisions = fetchDecisionsFn
-    this.onApplyActions = onApplyActions
-    this.clockPolicy = clockPolicy
-    this.decisionIntervalSteps = decisionIntervalSteps
-    this.maxConsecutiveFailures = maxConsecutiveFailures
+  constructor(options = {}) {
+    this.decisionIntervalSteps = options.decisionIntervalSteps || 50 // 50 steps = 1.0s at 50 Hz
+    this.clockPolicy = options.clockPolicy || 'lockstep' // 'lockstep' | 'realtime'
+    this.maxConsecutiveFailures = options.maxConsecutiveFailures || 3
+    this.onApplyActions = options.onApplyActions || null
+    this.fetchDecisions = options.fetchDecisionsFn || options.fetchDecisions || fetchDecisions
 
     // State
     this.tickCounter = 0
     this.isRequestInFlight = false
     this.consecutiveFailures = 0
     this.skippedTicks = 0
-    this.status = 'idle' // 'idle' | 'running' | 'requesting' | 'halted' | 'uncontrolled' | 'rate_limited'
+    this.status = 'idle' // 'idle' | 'running' | 'requesting' | 'halted' | 'uncontrolled'
     this.lastError = null
-    this.rateLimitCooldownUntil = null
-    this.rateLimitRetrySeconds = null
 
-    // Latency & Telemetry stats
+    // Latency & Token stats
     this.lastDecisions = null
     this.lastProviderLatencyMs = null
     this.lastRoundTripMs = null
+    this.maxProviderLatencyMs = null
+    this.lastInputTokens = null
+    this.lastOutputTokens = null
+    this.totalRequests = 0
+    this.successfulRequests = 0
+    this._recentLatencies = []
+    this._recentInputTokens = []
+    this._recentOutputTokens = []
+
     this.lastDecisionStep = 0
     this.lastDecisionSimTime = 0
     this.lastTriggeredStep = -1
@@ -74,11 +75,11 @@ export class DecisionScheduler {
     this.skippedTicks = 0
     this.status = 'idle'
     this.lastError = null
-    this.rateLimitCooldownUntil = null
-    this.rateLimitRetrySeconds = null
     this.lastDecisions = null
     this.lastProviderLatencyMs = null
     this.lastRoundTripMs = null
+    this.lastInputTokens = null
+    this.lastOutputTokens = null
     this.lastDecisionStep = 0
     this.lastDecisionSimTime = 0
     this.lastTriggeredStep = -1
@@ -86,42 +87,16 @@ export class DecisionScheduler {
     this.decisionAgeMs = 0
   }
 
-  resume() {
-    this.consecutiveFailures = 0
-    this.status = 'running'
-    this.lastError = null
-    this.rateLimitCooldownUntil = null
-    this.rateLimitRetrySeconds = null
+  checkStep(currentStep, currentSimTime, getActiveTelemetryFn) {
+    return this.step(currentStep, currentSimTime, getActiveTelemetryFn)
   }
 
-  /**
-   * Called on every physics engine step (50 Hz).
-   * Returns:
-   *   { shouldStepEngine: boolean, requestTriggered: boolean }
-   */
-  checkStep(currentStep, currentSimTime, getActiveTelemetryFn) {
+  step(currentStep, currentSimTime, getActiveTelemetryFn) {
     this.currentSimTime = currentSimTime
     this.decisionAgeMs = Math.max(0, (currentSimTime - this.lastDecisionSimTime) * 1000)
 
     if (this.status === 'halted') {
       return { shouldStepEngine: false, requestTriggered: false }
-    }
-
-    // Check if we are currently cooling down from a 429 rate limit
-    if (this.status === 'rate_limited') {
-      if (this.rateLimitCooldownUntil && Date.now() < this.rateLimitCooldownUntil) {
-        // Still cooling down: in lockstep pause physics, in realtime let physics roll
-        return {
-          shouldStepEngine: this.clockPolicy !== 'lockstep',
-          requestTriggered: false,
-        }
-      } else {
-        // Cooldown period expired! Resume normal operations
-        this.status = 'running'
-        this.rateLimitCooldownUntil = null
-        this.rateLimitRetrySeconds = null
-        this.consecutiveFailures = 0
-      }
     }
 
     // In lockstep mode, if a request is in flight, freeze the engine
@@ -146,7 +121,7 @@ export class DecisionScheduler {
         this.skippedTicks++
         return { shouldStepEngine: true, requestTriggered: false }
       } else {
-        // Lockstep waits
+        // Lockstep waits for provider response
         return { shouldStepEngine: false, requestTriggered: false }
       }
     }
@@ -167,6 +142,7 @@ export class DecisionScheduler {
     this.tickCounter++
     const currentTickId = this.tickCounter
     this.isRequestInFlight = true
+    this.totalRequests++
     this.status = 'requesting'
     this._abortController = new AbortController()
 
@@ -179,12 +155,34 @@ export class DecisionScheduler {
 
       // Success! Reset failure count
       this.consecutiveFailures = 0
+      this.successfulRequests++
       this.lastError = null
-      this.rateLimitCooldownUntil = null
-      this.rateLimitRetrySeconds = null
       this.lastDecisions = response.decisions
       this.lastProviderLatencyMs = response.providerLatencyMs
       this.lastRoundTripMs = response.roundTripLatencyMs
+      this.lastInputTokens = response.inputTokens || null
+      this.lastOutputTokens = response.outputTokens || null
+
+      if (response.providerLatencyMs != null) {
+        this._recentLatencies.push(response.providerLatencyMs)
+        if (this._recentLatencies.length > 50) this._recentLatencies.shift()
+        if (
+          this.maxProviderLatencyMs === null ||
+          response.providerLatencyMs > this.maxProviderLatencyMs
+        ) {
+          this.maxProviderLatencyMs = response.providerLatencyMs
+        }
+      }
+
+      if (response.inputTokens) {
+        this._recentInputTokens.push(response.inputTokens)
+        if (this._recentInputTokens.length > 50) this._recentInputTokens.shift()
+      }
+      if (response.outputTokens) {
+        this._recentOutputTokens.push(response.outputTokens)
+        if (this._recentOutputTokens.length > 50) this._recentOutputTokens.shift()
+      }
+
       this.lastDecisionStep = currentStep
       this.lastDecisionSimTime = currentSimTime
       this.decisionAgeMs = 0
@@ -199,27 +197,13 @@ export class DecisionScheduler {
         return
       }
 
-      const isRateLimit =
-        err.message &&
-        /(?:429|quota|resource_exhausted|rate.limit)/i.test(err.message)
+      this.consecutiveFailures++
+      this.lastError = err.message || 'Unknown decision error'
 
-      if (isRateLimit) {
-        // Extract retry seconds from error message if available (e.g. "Please retry in 14.1s")
-        const match = err.message.match(/retry in\s+([0-9.]+)\s*s/i)
-        const retrySec = match ? Math.ceil(parseFloat(match[1])) + 2 : 15
-        this.rateLimitCooldownUntil = Date.now() + retrySec * 1000
-        this.rateLimitRetrySeconds = retrySec
-        this.status = 'rate_limited'
-        this.lastError = `Gemini Free Tier 15 RPM quota limit reached. Cooldown in progress (resumes automatically in ~${retrySec}s). Recommended: switch to 5.0s (12 RPM) interval.`
+      if (this.consecutiveFailures >= this.maxConsecutiveFailures) {
+        this.status = 'halted'
       } else {
-        this.consecutiveFailures++
-        this.lastError = err.message || 'Unknown decision error'
-
-        if (this.consecutiveFailures >= this.maxConsecutiveFailures) {
-          this.status = 'halted'
-        } else {
-          this.status = 'uncontrolled'
-        }
+        this.status = 'uncontrolled'
       }
     } finally {
       this.isRequestInFlight = false
@@ -228,21 +212,48 @@ export class DecisionScheduler {
   }
 
   getMetrics() {
+    const avgLat =
+      this._recentLatencies.length > 0
+        ? Math.round(
+            this._recentLatencies.reduce((a, b) => a + b, 0) / this._recentLatencies.length
+          )
+        : null
+
+    const avgInTok =
+      this._recentInputTokens.length > 0
+        ? Math.round(
+            this._recentInputTokens.reduce((a, b) => a + b, 0) / this._recentInputTokens.length
+          )
+        : null
+
+    const avgOutTok =
+      this._recentOutputTokens.length > 0
+        ? Math.round(
+            this._recentOutputTokens.reduce((a, b) => a + b, 0) / this._recentOutputTokens.length
+          )
+        : null
+
     return {
       status: this.status,
       clockPolicy: this.clockPolicy,
+      decisionIntervalSteps: this.decisionIntervalSteps,
       tickCounter: this.tickCounter,
+      totalRequests: this.totalRequests,
+      successfulRequests: this.successfulRequests,
       isRequestInFlight: this.isRequestInFlight,
       consecutiveFailures: this.consecutiveFailures,
       skippedTicks: this.skippedTicks,
       decisionAgeMs: Math.round(this.decisionAgeMs),
       lastProviderLatencyMs: this.lastProviderLatencyMs,
+      avgProviderLatencyMs: avgLat,
+      maxProviderLatencyMs: this.maxProviderLatencyMs,
       lastRoundTripMs: this.lastRoundTripMs,
+      lastInputTokens: this.lastInputTokens,
+      avgInputTokens: avgInTok,
+      lastOutputTokens: this.lastOutputTokens,
+      avgOutputTokens: avgOutTok,
       lastError: this.lastError,
       lastDecisionStep: this.lastDecisionStep,
-      rateLimitCooldownUntil: this.rateLimitCooldownUntil,
-      rateLimitRetrySeconds: this.rateLimitRetrySeconds,
-      decisionIntervalSteps: this.decisionIntervalSteps,
     }
   }
 }

@@ -43,7 +43,6 @@ export function App() {
   const [speed, setSpeed] = useState(1) // 0.5, 1, 2, 4
   const [controllerKey, setControllerKey] = useState('llm_batch')
   const [clockPolicy, setClockPolicy] = useState('lockstep')
-  const [decisionIntervalSteps, setDecisionIntervalSteps] = useState(250) // 5.0s at 50 Hz (12 RPM)
   const [selectedVehicleId, setSelectedVehicleId] = useState(null)
   const [showSensorZones, setShowSensorZones] = useState(false)
 
@@ -60,7 +59,7 @@ export function App() {
         engineRef.current?.applyActions(actions)
       },
       clockPolicy: 'lockstep',
-      decisionIntervalSteps: 250,
+      decisionIntervalSteps: 50,
     })
   }
 
@@ -68,11 +67,6 @@ export function App() {
   useEffect(() => {
     llmControllerRef.current?.scheduler.setClockPolicy(clockPolicy)
   }, [clockPolicy])
-
-  // Sync decision interval changes with scheduler
-  useEffect(() => {
-    llmControllerRef.current?.scheduler.setDecisionIntervalSteps(decisionIntervalSteps)
-  }, [decisionIntervalSteps])
 
   // Reset backend session on mount so tick IDs start fresh
   useEffect(() => {
@@ -185,12 +179,6 @@ export function App() {
     setLlmMetrics(llmControllerRef.current?.getMetrics())
   }, [engine])
 
-  const handleResumeSimulation = useCallback(() => {
-    llmControllerRef.current?.resume()
-    setStatus('RUNNING')
-    setLlmMetrics(llmControllerRef.current?.getMetrics())
-  }, [])
-
   const handleSpeedChange = useCallback((newSpeed) => {
     setSpeed(newSpeed)
   }, [])
@@ -260,23 +248,19 @@ export function App() {
           {isLLM ? (
             <span
               className={`badge ${
-                llmMetrics?.status === 'running' || llmMetrics?.status === 'requesting'
-                  ? 'badge--success'
-                  : llmMetrics?.status === 'rate_limited'
-                    ? 'badge--notice'
-                    : llmMetrics?.status === 'halted'
-                      ? 'badge--alert'
-                      : 'badge--placeholder'
+                llmMetrics?.status === 'halted'
+                  ? 'badge--alert'
+                  : llmMetrics?.status === 'running'
+                    ? 'badge--success'
+                    : 'badge--notice'
               }`}
               role="status"
             >
-              {llmMetrics?.status === 'rate_limited'
-                ? 'RATE LIMITED: Cooldown in progress'
-                : llmMetrics?.status === 'halted'
-                  ? 'HALTED: Decision Failure Threshold'
-                  : llmMetrics?.status === 'uncontrolled'
-                    ? 'UNCONTROLLED: Open-Loop Inertia'
-                    : 'Phase 4: Single-Batch LLM Active'}
+              {llmMetrics?.status === 'halted'
+                ? 'HALTED: Decision Failure Threshold'
+                : llmMetrics?.status === 'uncontrolled'
+                  ? 'UNCONTROLLED: Open-Loop Inertia'
+                  : 'Phase 4: Single-Batch LLM Active'}
             </span>
           ) : (
             <span className="badge badge--placeholder" role="status">
@@ -285,40 +269,6 @@ export function App() {
           )}
         </div>
       </header>
-
-      {/* Rate Limited Cooldown Alert */}
-      {isLLM && llmMetrics?.status === 'rate_limited' && (
-        <div
-          className="alert alert--warning"
-          style={{
-            margin: '0 24px 12px 24px',
-            padding: '12px 16px',
-            background: '#f59e0b22',
-            border: '1px solid #f59e0b',
-            borderRadius: '6px',
-            color: '#fbbf24',
-            fontWeight: '600',
-            fontSize: '13px',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: '12px',
-          }}
-          role="alert"
-        >
-          <div>
-            ⏳ <strong>Gemini Free Tier Quota Limit (15 RPM)</strong>: {llmMetrics.lastError}
-          </div>
-          <button
-            type="button"
-            className="btn btn--secondary"
-            style={{ padding: '4px 12px', fontSize: '12px', whiteSpace: 'nowrap' }}
-            onClick={handleResumeSimulation}
-          >
-            Resume Now
-          </button>
-        </div>
-      )}
 
       {/* Failure Banner Alert */}
       {isLLM && llmMetrics?.status === 'halted' && (
@@ -333,26 +283,12 @@ export function App() {
             color: '#f87171',
             fontWeight: '600',
             fontSize: '13px',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: '12px',
           }}
           role="alert"
         >
-          <div>
-            SIMULATION HALTED: LLM decision service reached consecutive failure threshold. Reason:{' '}
-            {llmMetrics.lastError || 'Unknown provider error'}. Simulation clock paused to prevent
-            unmonitored runaway.
-          </div>
-          <button
-            type="button"
-            className="btn btn--secondary"
-            style={{ padding: '4px 12px', fontSize: '12px', whiteSpace: 'nowrap' }}
-            onClick={handleResumeSimulation}
-          >
-            Resume / Retry
-          </button>
+          SIMULATION HALTED: LLM decision service reached consecutive failure threshold. Reason:{' '}
+          {llmMetrics.lastError || 'Unknown provider error'}. Simulation clock paused to prevent
+          unmonitored runaway.
         </div>
       )}
 
@@ -392,14 +328,12 @@ export function App() {
             speed={speed}
             activeControllerName={controllerKey}
             clockPolicy={clockPolicy}
-            decisionIntervalSteps={decisionIntervalSteps}
             onStart={handleStart}
             onPause={handlePause}
             onReset={handleReset}
             onSpeedChange={handleSpeedChange}
             onControllerChange={handleControllerChange}
             onClockPolicyChange={handleClockPolicyChange}
-            onDecisionIntervalChange={setDecisionIntervalSteps}
           />
         </section>
 

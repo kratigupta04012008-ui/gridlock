@@ -3,13 +3,16 @@ GRID LOCK — LLM Provider Client
 
 Performs exactly ONE HTTP request per batch decision tick.
 Configures transport with retries=0 (strictly NO retries on error or timeout).
-Requests native JSON output from Gemini or OpenAI APIs.
+Implements thread-safe key pool rotation across ticks to prevent 429 quota exhaustion.
+Extracts native provider token usage metadata (promptTokenCount, candidatesTokenCount).
 """
 
 from abc import ABC, abstractmethod
 import json
+import re
+import threading
 import time
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 import httpx
 from backend.config import Settings, settings
 
@@ -27,6 +30,67 @@ class LLMProviderError(Exception):
         self.raw_response = raw_response
 
 
+class ProviderResult(tuple):
+    """
+    A 2-tuple (result, latency_ms) with input_tokens and output_tokens attributes.
+    Maintains 100% backward compatibility with 'result, latency = await provider.generate_decision(...)'.
+    """
+    def __new__(cls, result: Dict[str, Any], latency_ms: float, input_tokens: int = 0, output_tokens: int = 0):
+        obj = super().__new__(cls, (result, latency_ms))
+        obj.result = result
+        obj.latency_ms = latency_ms
+        obj.input_tokens = input_tokens
+        obj.output_tokens = output_tokens
+        return obj
+
+
+class GeminiKeyPool:
+    """Thread-safe key pool distributing requests round-robin across decision ticks."""
+
+    def __init__(self, keys: List[str]):
+        self._keys = [k.strip() for k in keys if k.strip()]
+        self._lock = threading.Lock()
+        self._index = 0
+        self._cooldowns: Dict[str, float] = {}
+
+    @property
+    def total_keys(self) -> int:
+        return len(self._keys)
+
+    def mark_rate_limited(self, key: str, cooldown_seconds: float = 60.0) -> None:
+        """Puts a key that hit 429 into temporary cooldown so subsequent ticks avoid it."""
+        with self._lock:
+            self._cooldowns[key] = time.time() + cooldown_seconds
+
+    def get_next_key(self, current_keys: Optional[List[str]] = None) -> str:
+        """Selects the next healthy key in round-robin sequence."""
+        with self._lock:
+            if current_keys is not None:
+                cleaned = [k.strip() for k in current_keys if k.strip()]
+                if cleaned != self._keys:
+                    self._keys = cleaned
+
+            if not self._keys:
+                raise LLMProviderError(
+                    "No Gemini API keys configured in pool", status_code=503
+                )
+
+            now = time.time()
+            expired = [k for k, exp in self._cooldowns.items() if exp <= now]
+            for k in expired:
+                del self._cooldowns[k]
+
+            # Try finding the next non-cooldown key
+            for _ in range(len(self._keys)):
+                key = self._keys[self._index % len(self._keys)]
+                self._index += 1
+                if key not in self._cooldowns:
+                    return key
+
+            # If all keys are in cooldown, select the one closest to expiry
+            return min(self._keys, key=lambda k: self._cooldowns.get(k, 0))
+
+
 class BaseLLMProvider(ABC):
     @abstractmethod
     async def generate_decision(
@@ -34,10 +98,10 @@ class BaseLLMProvider(ABC):
         system_prompt: str,
         user_prompt: str,
         client: Optional[httpx.AsyncClient] = None,
-    ) -> Tuple[Dict[str, Any], float]:
+    ) -> Tuple[Dict[str, Any], float, int, int]:
         """
         Executes single LLM request.
-        Returns (parsed_json_dict, provider_latency_ms).
+        Returns (parsed_json_dict, provider_latency_ms, input_tokens, output_tokens).
         Raises LLMProviderError on failure.
         """
         pass
@@ -46,22 +110,19 @@ class BaseLLMProvider(ABC):
 class GeminiProvider(BaseLLMProvider):
     def __init__(self, cfg: Settings = settings):
         self.cfg = cfg
+        self.key_pool = GeminiKeyPool(cfg.gemini_keys)
 
     async def generate_decision(
         self,
         system_prompt: str,
         user_prompt: str,
         client: Optional[httpx.AsyncClient] = None,
-    ) -> Tuple[Dict[str, Any], float]:
-        if not self.cfg.GEMINI_API_KEY:
-            raise LLMProviderError(
-                "Gemini API key is not configured in backend environment",
-                status_code=503,
-            )
+    ) -> Tuple[Dict[str, Any], float, int, int]:
+        active_key = self.key_pool.get_next_key(current_keys=self.cfg.gemini_keys)
 
         url = (
             f"https://generativelanguage.googleapis.com/v1beta/models/"
-            f"{self.cfg.LLM_MODEL}:generateContent?key={self.cfg.GEMINI_API_KEY}"
+            f"{self.cfg.LLM_MODEL}:generateContent?key={active_key}"
         )
 
         body = {
@@ -114,22 +175,18 @@ class GeminiProvider(BaseLLMProvider):
 
             latency_ms = (time.perf_counter() - t0) * 1000.0
 
-            if response.status_code != 200:
-                error_msg = response.text
-                status_code = 429 if response.status_code == 429 else 502
-                try:
-                    err_json = response.json()
-                    raw_msg = err_json.get("error", {}).get("message", "")
-                    if response.status_code == 429:
-                        error_msg = f"Gemini Free Tier quota exceeded (15 RPM limit): {raw_msg}"
-                    elif raw_msg:
-                        error_msg = f"Gemini API error ({response.status_code}): {raw_msg}"
-                except Exception:
-                    pass
-
+            if response.status_code == 429:
+                self.key_pool.mark_rate_limited(active_key, cooldown_seconds=60.0)
                 raise LLMProviderError(
-                    f"Gemini API returned status {response.status_code}: {error_msg}",
-                    status_code=status_code,
+                    f"Gemini API returned status 429: {response.text}",
+                    status_code=429,
+                    raw_response=response.text,
+                )
+
+            if response.status_code != 200:
+                raise LLMProviderError(
+                    f"Gemini API returned status {response.status_code}: {response.text}",
+                    status_code=502,
                     raw_response=response.text,
                 )
 
@@ -143,8 +200,19 @@ class GeminiProvider(BaseLLMProvider):
                     raw_response=response.text,
                 ) from exc
 
+            # Extract native provider token usage
+            usage = resp_json.get("usageMetadata", {})
+            input_tokens = int(usage.get("promptTokenCount", 0))
+            output_tokens = int(usage.get("candidatesTokenCount", 0))
+
+            cleaned_text = candidate_text.strip()
+            if cleaned_text.startswith("```"):
+                cleaned_text = re.sub(r"^```(?:json)?\s*", "", cleaned_text)
+                cleaned_text = re.sub(r"\s*```$", "", cleaned_text)
+                cleaned_text = cleaned_text.strip()
+
             try:
-                parsed = json.loads(candidate_text)
+                parsed = json.loads(cleaned_text)
             except json.JSONDecodeError as exc:
                 raise LLMProviderError(
                     f"Gemini generated invalid JSON: {candidate_text}",
@@ -152,7 +220,7 @@ class GeminiProvider(BaseLLMProvider):
                     raw_response=candidate_text,
                 ) from exc
 
-            return parsed, latency_ms
+            return ProviderResult(parsed, latency_ms, input_tokens, output_tokens)
         finally:
             if close_client:
                 await http_client.aclose()
@@ -167,7 +235,7 @@ class OpenAIProvider(BaseLLMProvider):
         system_prompt: str,
         user_prompt: str,
         client: Optional[httpx.AsyncClient] = None,
-    ) -> Tuple[Dict[str, Any], float]:
+    ) -> Tuple[Dict[str, Any], float, int, int]:
         if not self.cfg.OPENAI_API_KEY:
             raise LLMProviderError(
                 "OpenAI API key is not configured in backend environment",
@@ -204,8 +272,8 @@ class OpenAIProvider(BaseLLMProvider):
                     url,
                     json=body,
                     headers={
-                        "Authorization": f"Bearer {self.cfg.OPENAI_API_KEY}",
                         "Content-Type": "application/json",
+                        "Authorization": f"Bearer {self.cfg.OPENAI_API_KEY}",
                     },
                 )
             except httpx.TimeoutException as exc:
@@ -222,6 +290,13 @@ class OpenAIProvider(BaseLLMProvider):
                 ) from exc
 
             latency_ms = (time.perf_counter() - t0) * 1000.0
+
+            if response.status_code == 429:
+                raise LLMProviderError(
+                    f"OpenAI API rate limited (429): {response.text}",
+                    status_code=429,
+                    raw_response=response.text,
+                )
 
             if response.status_code != 200:
                 raise LLMProviderError(
@@ -240,8 +315,18 @@ class OpenAIProvider(BaseLLMProvider):
                     raw_response=response.text,
                 ) from exc
 
+            usage = resp_json.get("usage", {})
+            input_tokens = int(usage.get("prompt_tokens", 0))
+            output_tokens = int(usage.get("completion_tokens", 0))
+
+            cleaned_text = content.strip()
+            if cleaned_text.startswith("```"):
+                cleaned_text = re.sub(r"^```(?:json)?\s*", "", cleaned_text)
+                cleaned_text = re.sub(r"\s*```$", "", cleaned_text)
+                cleaned_text = cleaned_text.strip()
+
             try:
-                parsed = json.loads(content)
+                parsed = json.loads(cleaned_text)
             except json.JSONDecodeError as exc:
                 raise LLMProviderError(
                     f"OpenAI generated invalid JSON: {content}",
@@ -249,7 +334,7 @@ class OpenAIProvider(BaseLLMProvider):
                     raw_response=content,
                 ) from exc
 
-            return parsed, latency_ms
+            return ProviderResult(parsed, latency_ms, input_tokens, output_tokens)
         finally:
             if close_client:
                 await http_client.aclose()

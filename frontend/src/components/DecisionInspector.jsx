@@ -86,7 +86,7 @@ export function DecisionInspector({ schedulerMetrics, lastDecisions }) {
           <div
             style={{
               display: 'grid',
-              gridTemplateColumns: 'repeat(3, 1fr)',
+              gridTemplateColumns: 'repeat(4, 1fr)',
               gap: '8px',
               marginBottom: '12px',
             }}
@@ -104,6 +104,14 @@ export function DecisionInspector({ schedulerMetrics, lastDecisions }) {
               <div style={{ fontSize: '13px', fontWeight: 'bold', color: '#38bdf8' }}>
                 {schedulerMetrics?.lastRoundTripMs !== null
                   ? `${schedulerMetrics.lastRoundTripMs} ms`
+                  : '—'}
+              </div>
+            </div>
+            <div style={{ background: '#111827', padding: '8px', borderRadius: '4px' }}>
+              <div style={{ fontSize: '10px', color: '#888' }}>Tokens (In/Out)</div>
+              <div style={{ fontSize: '13px', fontWeight: 'bold', color: '#a855f7' }}>
+                {schedulerMetrics?.lastInputTokens !== null && schedulerMetrics?.lastInputTokens !== undefined
+                  ? `${schedulerMetrics.lastInputTokens} / ${schedulerMetrics.lastOutputTokens ?? 0}`
                   : '—'}
               </div>
             </div>

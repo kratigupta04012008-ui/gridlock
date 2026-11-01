@@ -2,12 +2,18 @@
 GRID LOCK — Backend Decision Schema (Pydantic v2)
 
 Single source of truth mirroring contracts/decisions.schema.json.
+Supports both:
+1. Compact fixed-order action tuples:
+   {"actions": [[vehicleId, "ACCELERATE"|"BRAKE"|"MAINTAIN", intensity], ...]}
+2. Classic object decisions:
+   {"decisions": [{"id": 0, "action": "ACCELERATE", "throttle": 0.5}, ...]}
+
 Enforces strict extra='forbid', mutually exclusive action payloads,
 and exact ID-set reconciliation against active vehicles.
 """
 
-from typing import Annotated, List, Literal, Optional, Set, Tuple, Union
-from pydantic import BaseModel, ConfigDict, Field, TypeAdapter
+from typing import Annotated, Any, Dict, List, Literal, Optional, Set, Tuple, Union
+from pydantic import BaseModel, ConfigDict, Field, TypeAdapter, ValidationError
 
 
 class AccelerateDecision(BaseModel):
@@ -43,13 +49,78 @@ class BatchDecisionResponse(BaseModel):
     )
 
 
-# TypeAdapter for single vehicle decision or response
+# TypeAdapters
 VehicleDecisionAdapter = TypeAdapter(VehicleDecision)
 BatchDecisionResponseAdapter = TypeAdapter(BatchDecisionResponse)
 
 
-def validate_decision_response(data: dict) -> BatchDecisionResponse:
-    """Validates raw dict against BatchDecisionResponse schema."""
+def _convert_compact_actions_to_decisions(actions: List[Any]) -> List[Dict[str, Any]]:
+    """
+    Normalizes compact [vehicleId, action, intensity] tuples into structured decision dicts.
+    Validates:
+    - 3-tuple structure [id: int, action: str, intensity: float]
+    - action in ACCELERATE, BRAKE, MAINTAIN
+    - intensity in [0.0, 1.0] (must be 0 for MAINTAIN)
+    """
+    normalized: List[Dict[str, Any]] = []
+    for idx, item in enumerate(actions):
+        if not isinstance(item, (list, tuple)) or len(item) != 3:
+            raise ValueError(
+                f"Action entry at index {idx} must be a 3-element list [id, action, intensity], got: {item}"
+            )
+
+        v_id, action_str, intensity_val = item
+
+        if not isinstance(v_id, int) or isinstance(v_id, bool):
+            raise ValueError(f"Vehicle ID at index {idx} must be an integer, got: {v_id}")
+
+        if not isinstance(action_str, str):
+            raise ValueError(f"Action at index {idx} must be a string, got: {action_str}")
+
+        action_upper = action_str.strip().upper()
+        if action_upper not in ("ACCELERATE", "BRAKE", "MAINTAIN"):
+            raise ValueError(
+                f"Unknown action '{action_str}' at index {idx}. Must be ACCELERATE, BRAKE, or MAINTAIN."
+            )
+
+        try:
+            intensity = float(intensity_val)
+        except (TypeError, ValueError) as err:
+            raise ValueError(
+                f"Intensity at index {idx} must be a valid float, got: {intensity_val}"
+            ) from err
+
+        if not (0.0 <= intensity <= 1.0):
+            raise ValueError(
+                f"Intensity {intensity} at index {idx} out of bounds [0.0, 1.0]"
+            )
+
+        if action_upper == "ACCELERATE":
+            normalized.append({"id": v_id, "action": "ACCELERATE", "throttle": intensity})
+        elif action_upper == "BRAKE":
+            normalized.append({"id": v_id, "action": "BRAKE", "intensity": intensity})
+        elif action_upper == "MAINTAIN":
+            if intensity != 0.0:
+                raise ValueError(
+                    f"Intensity for MAINTAIN action at index {idx} must be 0, got: {intensity}"
+                )
+            normalized.append({"id": v_id, "action": "MAINTAIN"})
+
+    return normalized
+
+
+def validate_decision_response(data: Any) -> BatchDecisionResponse:
+    """
+    Validates raw data against BatchDecisionResponse schema.
+    Transparently parses both compact 'actions' format and classic 'decisions' format.
+    """
+    if isinstance(data, list):
+        data = {"actions": data}
+
+    if isinstance(data, dict) and "actions" in data and "decisions" not in data:
+        normalized_decisions = _convert_compact_actions_to_decisions(data["actions"])
+        data = {"decisions": normalized_decisions}
+
     return BatchDecisionResponseAdapter.validate_python(data)
 
 

@@ -18,7 +18,7 @@ import { DecisionScheduler } from '../services/decisionScheduler.js'
  * @returns {object} LLM Controller interface
  */
 export function createLLMController(options = {}) {
-  const { onApplyActions, clockPolicy = 'lockstep', decisionIntervalSteps = 250 } = options
+  const { onApplyActions, clockPolicy = 'lockstep', decisionIntervalSteps = 50 } = options
 
   const scheduler = new DecisionScheduler({
     fetchDecisionsFn: fetchDecisions,
@@ -45,13 +45,6 @@ export function createLLMController(options = {}) {
      */
     reset() {
       scheduler.reset()
-    },
-
-    /**
-     * Resumes scheduler from halted or rate-limited state.
-     */
-    resume() {
-      scheduler.resume()
     },
 
     /**

@@ -47,6 +47,7 @@ class DecideRequest(BaseModel):
 
 
 @app.get("/health")
+@app.get("/api/health")
 def health() -> Dict[str, str]:
     return {"status": "ok", "service": "grid-lock-backend"}
 
@@ -66,9 +67,11 @@ def get_config() -> Dict[str, Any]:
         "model": settings.LLM_MODEL,
         "isConfigured": settings.is_configured,
         "maskedKey": settings.masked_key,
+        "keyPoolSize": len(settings.gemini_keys) if settings.LLM_PROVIDER == "gemini" else 1,
         "timeoutSeconds": settings.LLM_TIMEOUT_S,
         "maxTokens": settings.LLM_MAX_TOKENS,
         "temperature": settings.LLM_TEMPERATURE,
+        "compactMode": settings.LLM_COMPACT_MODE,
         "maxVehiclesPerBatch": settings.MAX_VEHICLES_PER_BATCH,
     }
 
@@ -93,7 +96,7 @@ def preview_decision_prompt(req: DecideRequest) -> Dict[str, Any]:
             detail=f"Telemetry validation failed: {exc}",
         ) from exc
 
-    compiled = prompt_builder.compile(reports)
+    compiled = prompt_builder.compile(reports, tick_id=req.tickId)
     return {
         "tickId": req.tickId,
         "systemPrompt": compiled["system_prompt"],
@@ -115,6 +118,7 @@ async def decide(req: DecideRequest) -> Dict[str, Any]:
         )
         return result
     except DecisionServiceError as err:
+        print(f"[DECIDE_ERROR] Tick {req.tickId} status {err.status_code}: {err.message}", flush=True)
         raise HTTPException(
             status_code=err.status_code,
             detail=err.message,

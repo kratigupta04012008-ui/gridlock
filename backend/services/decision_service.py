@@ -1,14 +1,20 @@
 """
-GRID LOCK — Decision Service Orchestrator
+GRID LOCK — Batch Decision Service Orchestrator
 
-Coordinates telemetry validation, concurrency locks, tick uniqueness,
-prompt building, LLM provider invocation, response validation, ID reconciliation,
-and ledger auditing.
+Coordinates batch decisions for all active vehicles per simulation tick.
+Guarantees:
+- Concurrency limit = 1 (single in-flight decision tick at any time).
+- Exactly ONE provider call per tick (maxProviderRequestsPerTick <= 1).
+- Non-reusable tick IDs.
+- Validates input telemetry and output decisions strictly against schemas.
+- Reconciles decision IDs with active vehicles.
+- Tracks input/output token usage and provider latency in CallLedger.
 """
 
 import asyncio
 import time
 from typing import Any, Dict, List, Optional, Set
+import httpx
 from pydantic import ValidationError
 
 from backend.config import Settings, settings
@@ -28,7 +34,12 @@ from backend.telemetry_schema import VehicleTelemetryReport, validate_telemetry_
 
 
 class DecisionServiceError(Exception):
-    def __init__(self, message: str, status_code: int = 400, details: Any = None):
+    def __init__(
+        self,
+        message: str,
+        status_code: int = 500,
+        details: Optional[Any] = None,
+    ):
         super().__init__(message)
         self.message = message
         self.status_code = status_code
@@ -39,25 +50,19 @@ class DecisionService:
     def __init__(
         self,
         cfg: Settings = settings,
-        ledger_instance: CallLedger = ledger,
-        prompt_bld: PromptBuilder = prompt_builder,
-        provider_instance: Optional[BaseLLMProvider] = None,
+        provider: Optional[BaseLLMProvider] = None,
+        prompt_bld: Optional[PromptBuilder] = None,
+        call_ledger: Optional[CallLedger] = None,
     ):
         self.cfg = cfg
-        self.ledger = ledger_instance
-        self.prompt_builder = prompt_bld
-        self._provider = provider_instance
-        self._in_flight_lock = asyncio.Lock()
+        self.provider = provider or get_llm_provider(cfg)
+        self.prompt_builder = prompt_bld or prompt_builder
+        self.ledger = call_ledger or ledger
+        self._lock = asyncio.Lock()
         self._consumed_tick_ids: Set[int] = set()
 
-    @property
-    def provider(self) -> BaseLLMProvider:
-        if self._provider is None:
-            self._provider = get_llm_provider(self.cfg)
-        return self._provider
-
     def reset_state(self) -> None:
-        """Resets consumed tick IDs and ledger (for testing)."""
+        """Resets consumed tick IDs and audit ledger for fresh simulation runs."""
         self._consumed_tick_ids.clear()
         self.ledger.clear()
 
@@ -65,41 +70,28 @@ class DecisionService:
         self,
         tick_id: int,
         telemetry_raw: List[Dict[str, Any]],
-        client=None,
+        client: Optional[httpx.AsyncClient] = None,
     ) -> Dict[str, Any]:
         """
-        Executes a single decision batch for a tick.
-        Guarantees:
-        - At most 1 in-flight request at any time (409 Conflict if locked).
-        - Tick IDs are never reused (409 Conflict if already consumed).
-        - Exactly ONE provider HTTP request attempted.
-        - Strict JSON schema validation and exact ID set match.
+        Executes single batch decision request for all active vehicles on tick_id.
+        Single flight concurrency lock guarantees no simultaneous requests.
         """
-        t0 = time.perf_counter()
-
-        # Check concurrency lock non-blocking
-        if self._in_flight_lock.locked():
-            round_trip_ms = (time.perf_counter() - t0) * 1000.0
-            self.ledger.record_rejected_before_provider(
-                tick_id=tick_id,
-                vehicle_ids=[],
-                reason="Another decision request is currently in-flight",
-                round_trip_ms=round_trip_ms,
-                status_code=409,
-            )
+        if self._lock.locked():
             raise DecisionServiceError(
-                message="Decision request already in-flight. Concurrency limit is 1.",
-                status_code=409,
+                message="Decision service is busy. Concurrency limit is 1.",
+                status_code=429,
             )
 
-        async with self._in_flight_lock:
-            # 1. Verify tick ID uniqueness
+        async with self._lock:
+            t0 = time.perf_counter()
+
+            # 1. Enforce Non-Reusable Monotonic Tick ID
             if tick_id in self._consumed_tick_ids:
                 round_trip_ms = (time.perf_counter() - t0) * 1000.0
                 self.ledger.record_rejected_before_provider(
                     tick_id=tick_id,
                     vehicle_ids=[],
-                    reason=f"Tick ID {tick_id} has already been consumed",
+                    reason=f"Tick ID {tick_id} has already been processed and cannot be reused.",
                     round_trip_ms=round_trip_ms,
                     status_code=409,
                 )
@@ -172,8 +164,8 @@ class DecisionService:
                     status_code=503,
                 )
 
-            # 4. Compile Prompts
-            compiled = self.prompt_builder.compile(reports)
+            # 4. Compile Prompts (using compact serialization)
+            compiled = self.prompt_builder.compile(reports, tick_id=tick_id)
             system_prompt = compiled["system_prompt"]
             user_prompt = compiled["user_prompt"]
 
@@ -181,12 +173,18 @@ class DecisionService:
             self.ledger.record_provider_attempt(tick_id=tick_id)
 
             # 6. Call Provider (Exactly ONE call)
+            input_tokens = 0
+            output_tokens = 0
             try:
-                raw_decision_dict, provider_latency_ms = await self.provider.generate_decision(
+                res = await self.provider.generate_decision(
                     system_prompt=system_prompt,
                     user_prompt=user_prompt,
                     client=client,
                 )
+                raw_decision_dict = res[0]
+                provider_latency_ms = res[1]
+                input_tokens = getattr(res, "input_tokens", 0)
+                output_tokens = getattr(res, "output_tokens", 0)
             except LLMProviderError as exc:
                 round_trip_ms = (time.perf_counter() - t0) * 1000.0
                 self.ledger.record_provider_failure(
@@ -196,6 +194,8 @@ class DecisionService:
                     provider_latency_ms=None,
                     round_trip_ms=round_trip_ms,
                     status_code=exc.status_code,
+                    input_tokens=0,
+                    output_tokens=0,
                 )
                 raise DecisionServiceError(
                     message=f"Provider failed: {exc.message}",
@@ -203,10 +203,10 @@ class DecisionService:
                     details=exc.raw_response,
                 ) from exc
 
-            # 7. Validate Decision Schema
+            # 7. Validate Decision Schema (supports compact actions & classic decisions)
             try:
                 verified_response: BatchDecisionResponse = validate_decision_response(raw_decision_dict)
-            except ValidationError as exc:
+            except (ValidationError, ValueError) as exc:
                 round_trip_ms = (time.perf_counter() - t0) * 1000.0
                 err_msg = f"LLM output violated decision schema: {exc}"
                 self.ledger.record_provider_failure(
@@ -216,11 +216,13 @@ class DecisionService:
                     provider_latency_ms=provider_latency_ms,
                     round_trip_ms=round_trip_ms,
                     status_code=502,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
                 )
                 raise DecisionServiceError(
                     message="LLM output did not conform to decision JSON schema",
                     status_code=502,
-                    details=exc.errors(),
+                    details=str(exc),
                 ) from exc
 
             # 8. Reconcile Decision IDs Against Expected Active Vehicles
@@ -237,6 +239,8 @@ class DecisionService:
                     provider_latency_ms=provider_latency_ms,
                     round_trip_ms=round_trip_ms,
                     status_code=502,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
                 )
                 raise DecisionServiceError(
                     message=f"LLM decision IDs do not match active vehicles: {mismatch_reason}",
@@ -251,6 +255,8 @@ class DecisionService:
                 vehicle_ids=vehicle_ids,
                 provider_latency_ms=provider_latency_ms,
                 round_trip_ms=round_trip_ms,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
             )
 
             return {
@@ -259,6 +265,8 @@ class DecisionService:
                 "decisions": [d.model_dump() for d in verified_response.decisions],
                 "providerLatencyMs": round(provider_latency_ms, 1),
                 "roundTripLatencyMs": round(round_trip_ms, 1),
+                "inputTokens": input_tokens,
+                "outputTokens": output_tokens,
             }
 
 

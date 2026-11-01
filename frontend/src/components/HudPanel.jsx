@@ -1,9 +1,10 @@
 /**
- * GRID LOCK — HUD Metrics Panel (Phase 4: LLM Multi-Agent Control)
+ * GRID LOCK — HUD Metrics Panel (Phase 4: LLM Multi-Agent Control & Token Optimization)
  *
  * Strict Honesty Rules:
  * - Collisions: Real count from SAT collision detector
- * - LLM latency: Real provider ms and round-trip ms when LLM is active; "Baseline Mode" when non-AI controller is active
+ * - LLM latency: Real provider ms, rolling avg, and max ms
+ * - Tokens: Native provider-reported input & output tokens displayed in real-time
  * - Vehicles safely cleared: Real clearedClean count from simulation engine
  * - Active vehicles: Real active + waiting vehicle count on map
  */
@@ -40,7 +41,12 @@ export function HudPanel({ metrics, llmMetrics, activeControllerKey }) {
     ) {
       latencyValue = `${llmMetrics.lastProviderLatencyMs} ms`
       const skips = llmMetrics.skippedTicks > 0 ? ` | Skips: ${llmMetrics.skippedTicks}` : ''
-      latencyCaption = `RT: ${llmMetrics.lastRoundTripMs ?? '—'}ms | Age: ${llmMetrics.decisionAgeMs ?? 0}ms${skips}`
+      const avgStr = llmMetrics.avgProviderLatencyMs ? ` | Avg: ${llmMetrics.avgProviderLatencyMs}ms` : ''
+      const tokStr =
+        llmMetrics.lastInputTokens || llmMetrics.lastOutputTokens
+          ? ` | Tok: ${llmMetrics.lastInputTokens ?? 0}in/${llmMetrics.lastOutputTokens ?? 0}out`
+          : ''
+      latencyCaption = `RT: ${llmMetrics.lastRoundTripMs ?? '—'}ms | Age: ${llmMetrics.decisionAgeMs ?? 0}ms${avgStr}${tokStr}${skips}`
       latencyBadge = (llmMetrics.clockPolicy || 'lockstep').toUpperCase()
       latencyAlert = false
     } else if (llmMetrics?.status === 'requesting') {
@@ -50,8 +56,8 @@ export function HudPanel({ metrics, llmMetrics, activeControllerKey }) {
       latencyAlert = false
     } else {
       latencyValue = 'Ready'
-      latencyCaption = 'Waiting for tick boundary'
-      latencyBadge = 'LLM Batch'
+      latencyCaption = 'Waiting for tick boundary (8-Key Pool)'
+      latencyBadge = 'Compact AI'
       latencyAlert = false
     }
   }
