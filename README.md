@@ -1,208 +1,282 @@
-# GRID LOCK — LLM-Driven Multi-Agent Traffic Control
+# 🚦 GRID LOCK — Autonomous Intersection
+### LLM-Driven Multi-Agent Traffic Control
 
-**GRID LOCK** is an intelligent transportation research simulator designed to evaluate multi-agent coordination at a 4-way signalized intersection using a single batch LLM API call per decision tick.
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com)
+[![React](https://img.shields.io/badge/React-18.3+-61DAFB?logo=react&logoColor=black)](https://react.dev)
+[![Vite](https://img.shields.io/badge/Vite-5.0+-646CFF?logo=vite&logoColor=white)](https://vitejs.dev)
+[![Python](https://img.shields.io/badge/Python-3.10+-3776AB?logo=python&logoColor=white)](https://www.python.org)
+[![Gemini](https://img.shields.io/badge/Google%20Gemini-3.1%20Flash%20Lite-4285F4?logo=google&logoColor=white)](https://ai.google.dev)
+[![Vitest](https://img.shields.io/badge/Vitest-89%20passed-green?logo=vitest&logoColor=white)](https://vitest.dev)
+[![Pytest](https://img.shields.io/badge/Pytest-39%20passed-green?logo=pytest&logoColor=white)](https://pytest.org)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-This repository implements **Phase 1 (Visual Frontend & Contracts)** and **Phase 2 (Realistic, Deterministic Traffic Simulation Engine)**.
+**GRID LOCK** is an intelligent transportation research platform and simulation benchmark designed to evaluate multi-agent vehicle coordination at a 4-way intersection using **a single batch LLM API call per decision tick**.
+
+Rather than relying on omniscient bird's-eye coordinates, each autonomous vehicle operates strictly on **local, ego-centric sensor telemetry** (front/rear distance, relative velocity, blind-spot side clearance, and signal state). A centralized or roadside LLM controller coordinates all active vehicles simultaneously under real-world physical constraints, testing LLM spatial reasoning, safety critical decision-making, and deadlock avoidance.
 
 ![Grid Lock Screenshot](./screenshot_desktop.png)
 
 ---
 
-## Non-Negotiable Invariants & Honesty Rules
+## 🌟 Key Features & Innovations
 
-1. **Deterministic, Pure JS Physics**:
-   - Simulation state transitions depend only on initial seed and commanded actions.
-   - Zero dependency on Canvas, DOM, React, `Date.now()`, or `Math.random()`.
-   - Fixed timestep $\Delta t = 0.02\text{ s}$ ($50\text{ Hz}$), decoupled from the 60 FPS animation loop via a time accumulator.
-2. **No Hidden Safety Overrides**:
-   - Zero emergency braking, zero phantom bumper repulsion, zero speed clamping to leading vehicles.
-   - If an external controller commands acceleration into a collision, vehicles will collide physically.
-3. **No Artificial Metrics**:
-   - HUD statistics reflect real simulation events only. Collisions and cleared vehicles count live physical transitions; LLM latency reports *Not connected*.
-4. **Local Telemetry Exclusively**:
-   - Per-car local sensor readings only (front/rear distance & relative velocity, side proximity, distance to stop line, signal state). **Global coordinates (x, y) are strictly forbidden** in telemetry contracts.
-5. **Single Batch LLM Call**:
-   - When connected (Phase 4), exactly one batch inference call per decision tick for all 20 vehicles. Never per-car requests.
-6. **Right-Hand Traffic (RHT)**:
-   - Vehicles drive on the right side of the road in both directions.
-
----
-
-## Architecture & Simulation Physics
-
-See detailed specifications in [`docs/physics.md`](docs/physics.md) and [`docs/contracts.md`](docs/contracts.md).
-
-### Kinematic Equations
-- Timestep: $\Delta t = 0.02\text{ s}$ ($50\text{ Hz}$)
-- Coordinate Conversion: `PIXELS_PER_METER = 10.0` ($800\text{ px} \times 800\text{ px} = 80\text{ m} \times 80\text{ m}$)
-- Vehicle Dimensions: Length $4.5\text{ m}$, Width $1.9\text{ m}$
-- Speed Limits: $v \in [0, 13.5\text{ m/s}]$ ($\sim 48.6\text{ km/h}$)
-- Acceleration Limits: $a \in [-6.0\text{ m/s}^2, +3.0\text{ m/s}^2]$
-- Jerk Limit: $J_{max} = 8.0\text{ m/s}^3$
-- Anti-Tunneling Proof: At $v_{max} = 13.5\text{ m/s}$, max step displacement $\Delta s = 0.27\text{ m} < 0.95\text{ m}$ (half-car width), preventing any collision tunneling.
-
-### Signal Controller State Machine
-- 34-second cycle ($1700\text{ steps}$ at $50\text{ Hz}$):
-  1. North/South GREEN ($12\text{ s}$)
-  2. North/South YELLOW ($3\text{ s}$)
-  3. All-RED clearance ($2\text{ s}$)
-  4. East/West GREEN ($12\text{ s}$)
-  5. East/West YELLOW ($3\text{ s}$)
-  6. All-RED clearance ($2\text{ s}$)
-- Proven invariant: Conflicting approaches (NS vs EW) are never GREEN or YELLOW simultaneously.
-
-### Collision Detection
-- Full 2D Oriented Bounding Box (OBB) using Separating Axis Theorem (SAT).
-- Continuous overlap tracking: Collisions are counted on the transition from disjoint to colliding, avoiding double-counting ongoing contact.
+- **Deterministic Pure-JS Physics Engine**:
+  Fixed timestep ($\Delta t = 0.02\text{ s}$ / $50\text{ Hz}$), zero DOM/canvas coupling, analytical piecewise kinematics with jerk limiting ($8.0\text{ m/s}^3$), and mathematically proven anti-tunneling bounds ($\Delta s_{\max} = 0.27\text{ m} < 0.95\text{ m}$).
+- **Zero-Tolerance Honesty & No Phantom Physics**:
+  Zero emergency braking overrides, zero phantom bumper repulsion, and zero artificial speed clamping. If an external controller commands unsafe acceleration into a conflict, vehicles collide physically.
+- **Strict Local Telemetry (Ego-Centric Only)**:
+  Zero global coordinates $(x, y)$. Vehicles perceive the world exclusively through local body-frame corridors (bumper-to-bumper gaps, relative velocity, adjacent lane blind-spot clearances, and stop-line distance).
+- **Single Batch LLM Call Per Decision Tick**:
+  Exactly **ONE** provider request per tick for all active vehicles—never per-vehicle polling. Transport-level `retries=0`, single-flight lock (`asyncio.Lock`), and immutable call ledger verification.
+- **Dual Simulation Clock Policies**:
+  - **Lockstep Mode**: Pauses the simulation clock while awaiting LLM inference for reproducible benchmark evaluations.
+  - **Realtime Mode**: Continuous 50 Hz physics execution with decision age tracking and fallback safety buffers.
+- **2D Oriented Bounding Box (OBB) SAT Collision Detection**:
+  Continuous contact transition tracking using Separating Axis Theorem (SAT), counting distinct collision incidents without duplicate spam.
+- **Comprehensive Developer & Research HUD**:
+  Includes interactive HTML5 Canvas, live Telemetry Inspector with JSON Schema validation, Prompt Inspector, Decision Inspector, and Vehicle Inspector.
 
 ---
 
-## Directory Structure
+## 🏛️ System Architecture
+
+```
+                          ┌──────────────────────────────────────────────┐
+                          │         Frontend (React + Vite + HTML5)      │
+                          │                                              │
+                          │  ┌──────────────┐      ┌──────────────────┐  │
+                          │  │  50 Hz Engine│◄────►│Decision Scheduler│  │
+                          │  │ (Physics+SAT)│      │(Lockstep/Realtime│  │
+                          │  └──────┬───────┘      └────────┬─────────┘  │
+                          └─────────┼───────────────────────┼────────────┘
+                                    │ Local Telemetry       │ Batch Actions
+                                    ▼ Batch                 ▼
+                          ┌──────────────────────────────────────────────┐
+                          │       JSON Schema Validation Layer           │
+                          │  telemetry.schema.json / decisions.schema.json│
+                          │        (Ajv Draft-07 & Pydantic v2)          │
+                          └─────────────────┬────────────────────────────┘
+                                            │ HTTP POST /api/decide
+                                            ▼
+                          ┌──────────────────────────────────────────────┐
+                          │         Backend Server (FastAPI)             │
+                          │                                              │
+                          │  ┌────────────────────────────────────────┐  │
+                          │  │ Single-Flight Concurrency Lock         │  │
+                          │  ├────────────────────────────────────────┤  │
+                          │  │ Immutable Call Ledger (Max 1 req/tick) │  │
+                          │  ├────────────────────────────────────────┤  │
+                          │  │ Prompt Compiler (Zero Coords Leak)     │  │
+                          │  └──────────────────┬─────────────────────┘  │
+                          └─────────────────────┼────────────────────────┘
+                                                │ Streaming / REST (retries=0)
+                                                ▼
+                                    ┌───────────────────────┐
+                                    │   Google Gemini API   │
+                                    │ (gemini-3.1-flash-lite)│
+                                    └───────────────────────┘
+```
+
+---
+
+## 🔒 Non-Negotiable Invariants
+
+1. **No Global Coordinates in Telemetry**:
+   Any presence of `x`, `y`, or absolute heading in telemetry payloads violates the schema and fails tests. Sensors strictly report body-frame relative metrics.
+2. **Exactly One Provider Request Per Tick**:
+   No SDK auto-retries, no fallback models, no secondary repair calls. Every decision tick ID is strictly monotonic and non-reusable.
+3. **True Physical Consequences**:
+   HUD collision metrics reflect genuine OBB polygon intersections. The simulation never fabricates or suppresses collision events.
+4. **Cross-Language Contract Parity**:
+   Every fixture valid under frontend Ajv (Draft-07) is guaranteed valid under backend Pydantic v2, and vice-versa, with `additionalProperties: false` strictly enforced.
+
+---
+
+## 📁 Repository Structure
 
 ```
 autonomous-intersection/
-  frontend/
-    src/
-      components/
-        ControlBar.jsx          # Start, Pause, Reset, Baseline Controller selector, Clock
-        HudPanel.jsx            # Live real metrics (Collisions, Cleared, Active, LLM Latency)
-        MetricCard.jsx          # Metric presentation with tabular numerals & badges
-        ScenarioSelect.jsx      # Placeholder scenario selector (explicitly marked)
-        SignalLegend.jsx        # Signal indicators & phase visual preview
-        SimulationCanvas.jsx    # Single HTML5 canvas with HiDPI & hit-testing
-        SpeedControl.jsx        # 0.5x, 1x, 2x, 4x speed multipliers
-        StatusBadge.jsx         # Idle, Running, Paused indicator
-        VehicleInspector.jsx    # Attribute inspector & manual action tester
-      contracts/
-        schemas.js              # Telemetry & action contracts (rejects global x, y)
-      controllers/
-        baselineControllers.js  # Rule-based Signal Follower, Coast, Constant Accel
-      hooks/
-        useCanvasLoop.js        # requestAnimationFrame lifecycle hook
-        useElementSize.js       # ResizeObserver hook for responsive canvas
-      rendering/
-        canvasSetup.js          # HiDPI resolution scaling & coordinate transforms
-        drawLaneMarkings.js     # Dashed white dividers, double yellow median, stop lines
-        drawRoads.js            # Asphalt, center junction box, crosswalks, curbs
-        drawSignals.js          # Signal heads with glowing active lamps
-        drawVehicles.js         # Oriented vehicle bodies, chevrons, IDs, collision halo
-        hitTest.js              # Oriented bounding box click/hover picking
-        renderScene.js          # Pure scene renderer: (ctx, snapshot, viewState)
-        theme.js                # Canvas color tokens & styling constants
-      simulation/
-        collisionDetector.js    # SAT OBB collision detector & transition tracking
-        config.js               # Physics parameters, SI limits, signal timing
-        engine.js               # createEngine() factory with step(), reset(), snapshot()
-        geometry.js             # 800x800 world geometry math & boundaries
-        paths.js                # Arc-length parameterized paths (straight, left, right)
-        prng.js                 # Mulberry32 deterministic PRNG
-        sceneFixture.js         # Default initial queue fixture
-        signalController.js     # Discrete cyclic signal state machine
-        vehicle.js              # 20-vehicle fleet generator & kinematic updater
-        vehiclePhysics.js       # Jerk-limited acceleration & piecewise kinematics
-      styles/
-        index.css               # Design tokens, fonts, and base styling
-        dashboard.css           # 2-column responsive layout & card styles
-      tests/
-        clockState.test.js      # Status transitions & clock speed scaling tests
-        collision.test.js       # OBB SAT collision tests (overlap, perpendicular, clear)
-        contracts.test.js       # Telemetry validation & spatial coordinate rejection
-        engine.test.js          # Determinism, step(), reset(), metrics, and baseline run
-        geometry.test.js        # Road and stop line calculation tests
-        hitTest.test.js         # Vehicle picking & empty area miss tests
-        physics.test.js         # Jerk limiting, braking bounds, zero speed clipping
-        sceneFixture.test.js    # Initial queue count and bounds verification
-        signalController.test.js# Cycle timing, all-red phases, conflict invariants
-        smoke.test.jsx          # Component smoke tests & honesty checks
-      App.jsx                   # Fixed-timestep accumulator loop & UI state
-      main.jsx                  # React application entrypoint
-    package.json
-    vite.config.js
-    eslint.config.js
-    .prettierrc
-  docs/
-    contracts.md                # Data contract definitions
-    physics.md                  # Detailed physics, kinematics & anti-tunneling spec
-  package.json                  # Root delegating scripts
-  README.md
+├── .env.example                     # Environment template (Gemini API key & provider)
+├── .gitignore                       # Strict ignore rules (secrets, venv, node_modules)
+├── package.json                     # Root orchestration scripts
+├── README.md                        # Project documentation & benchmark guide
+│
+├── contracts/                       # Shared Data Contracts (Single Source of Truth)
+│   ├── telemetry.schema.json        # Strict local sensor JSON schema
+│   ├── decisions.schema.json        # Commanded action batch schema
+│   └── fixtures/                    # Valid & invalid test matrices for CI parity
+│       ├── valid/                   # Minimal, full-active, and sample batches
+│       ├── invalid/                 # Canary checks (denylist, extra fields, bad enums)
+│       └── decisions/               # Commanded action schema edge-case fixtures
+│
+├── backend/                         # Decision Server (FastAPI + Pydantic v2)
+│   ├── main.py                      # FastAPI application entrypoint & REST routes
+│   ├── config.py                    # Provider configuration & timeout settings
+│   ├── telemetry_schema.py          # Pydantic v2 telemetry contract
+│   ├── decision_schema.py           # Pydantic v2 decision contract
+│   ├── prompts/
+│   │   ├── system_v1.txt            # System prompt with strict JSON output rules
+│   │   └── user_template.txt        # Local telemetry compilation template
+│   ├── services/
+│   │   ├── decision_service.py      # Orchestrator with single-flight concurrency lock
+│   │   ├── call_ledger.py           # Thread-safe audit ledger (zero retry invariant)
+│   │   ├── prompt_builder.py        # Telemetry-to-prompt serializer
+│   │   └── llm/provider.py          # Google Gemini / OpenAI transport client (retries=0)
+│   └── tests/                       # Pytest test suite (39 tests)
+│       ├── test_api_endpoints.py     # Endpoint contracts & validation errors
+│       ├── test_decision_schema.py  # Ajv parity & edge case verification
+│       ├── test_prompt_leak.py      # Spatial leak & coordinate canary tests
+│       └── test_provider_transport.py # Zero-retry & ledger enforcement tests
+│
+├── frontend/                        # Simulation Dashboard (React 18 + Vite + Vitest)
+│   ├── index.html                   # HTML entrypoint
+│   ├── vite.config.js               # Build & test configuration
+│   └── src/
+│       ├── App.jsx                  # Root dashboard layout & simulation loop
+│       ├── components/              # Interactive UI modules
+│       │   ├── SimulationCanvas.jsx # HiDPI canvas with OBB hit-testing
+│       │   ├── ControlBar.jsx       # Play/pause/step, clock policy, controller select
+│       │   ├── HudPanel.jsx         # Live telemetry & physical performance metrics
+│       │   ├── TelemetryInspector.jsx# Local sensor readout & schema validator badge
+│       │   ├── PromptInspector.jsx  # Raw LLM prompt viewer
+│       │   ├── DecisionInspector.jsx# LLM response parser & latency ledger
+│       │   ├── VehicleInspector.jsx # Vehicle telemetry & manual action commander
+│       │   └── SignalLegend.jsx     # Traffic phase timing & state indicator
+│       ├── contracts/               # Ajv schema validators & parity wrappers
+│       ├── controllers/             # LLM Controller + Baseline Controllers
+│       ├── hooks/                   # useCanvasLoop & useElementSize
+│       ├── rendering/               # Pure HTML5 canvas rendering pipeline
+│       ├── services/                # DecisionClient & DecisionScheduler
+│       ├── simulation/              # 50 Hz deterministic physics & SAT collision engine
+│       ├── telemetry/               # Local body-frame sensor builders
+│       └── tests/                   # Vitest unit & integration test suite (89 tests)
+│
+└── docs/                            # Research & Engineering Specifications
+    ├── physics.md                   # Kinematic equations, SAT OBB, anti-tunneling
+    ├── contracts.md                 # Telemetry & decision JSON contract specs
+    ├── telemetry.md                 # Local sensor geometry & coordinate rejection
+    └── llm-integration.md           # LLM batch protocol, clock policies & ledger
 ```
 
 ---
 
-## Setup & Running Commands
+## ⚡ Quick Start Guide
 
-### 1. Install Dependencies
+### 1. Prerequisites
+- **Node.js**: v18.0.0 or higher
+- **Python**: v3.10 or higher
+- **Google Gemini API Key** (or OpenAI API key): [Get an AI Studio Key](https://aistudio.google.com/app/apikey)
+
+---
+
+### 2. Environment Setup
+
+Clone the repository and create your environment configuration:
+
 ```bash
+# Clone the repo
+git clone https://github.com/kratigupta04012008-ui/gridlock.git
+cd gridlock
+
+# Copy environment example
+cp .env.example .env
+```
+
+Edit `.env` and add your Google Gemini API key:
+```env
+LLM_PROVIDER=gemini
+GEMINI_API_KEY=your_actual_gemini_api_key_here
+LLM_MODEL=gemini-3.1-flash-lite
+LLM_TIMEOUT_S=10.0
+LLM_TEMPERATURE=0.0
+```
+
+---
+
+### 3. Start the Backend Decision Server
+
+In a new terminal window:
+
+```bash
+# Install Python dependencies
+pip install fastapi uvicorn pydantic google-genai httpx pytest pytest-asyncio python-dotenv
+
+# Start FastAPI server on port 8000
+python -m uvicorn backend.main:app --port 8000 --reload
+```
+*The decision server will run at `http://localhost:8000` (API docs at `http://localhost:8000/docs`).*
+
+---
+
+### 4. Start the Frontend Simulation Dashboard
+
+In a second terminal window:
+
+```bash
+# Install frontend dependencies
 cd frontend
 npm install
-```
 
-### 2. Start Development Server
-```bash
+# Start Vite dev server
 npm run dev
-# Open http://localhost:5173
 ```
-
-### 3. Run Test Suite (Vitest)
-```bash
-npm test
-```
-*Executes all 50 unit and smoke tests covering physics, kinematics, collision detection, signal state machines, determinism, contracts, and UI components.*
-
-### 4. Run Linting & Formatting
-```bash
-npm run lint
-npm run format:check
-```
-
-### 5. Production Build
-```bash
-npm run build
-```
+*Open [http://localhost:5173](http://localhost:5173) in your browser.*
 
 ---
 
-## Phase Roadmap
+## 🧪 Running the Test Suite
 
-- [x] **Phase 1: Visual Frontend & Contracts (Completed)**
-  - Top-down HTML5 canvas intersection rendering (roads, center box, stop lines, crosswalks)
-  - 20 vehicles queued realistically across 4 approaches with direction chevrons & IDs
-  - Glowing traffic signal heads with visual phase preview selector
-  - Canvas hit-testing, selection halo, and vehicle inspector
-  - Simulation clock with Start/Pause/Reset and speed multipliers (0.5x, 1x, 2x, 4x)
-  - Honest HUD metrics (no fabricated AI or collision numbers)
-  - Data contracts rejecting global coordinates
-- [x] **Phase 2: Realistic, Deterministic Traffic Simulation Engine (Completed)**
-  - Fixed-timestep $\Delta t = 0.02\text{ s}$ ($50\text{ Hz}$) pure JS simulation engine
-  - Decoupled from rendering loop using time accumulator with catch-up capping
-  - SI units ($m, s, m/s, m/s^2, m/s^3$) and Right-Hand Traffic (RHT) convention
-  - Arc-length parameterized paths for 4 approaches $\times$ (Straight, Left turn, Right turn)
-  - Analytical piecewise kinematics with jerk limiting ($8.0\text{ m/s}^3$)
-  - Anti-tunneling verified analytically ($\Delta s_{max} = 0.27\text{ m} < 0.95\text{ m}$)
-  - Full 2D OBB Separating Axis Theorem (SAT) collision detector with contact transitions
-  - Deterministic 34s cyclic traffic signal state machine with non-conflicting green/yellow invariant
-  - Baseline non-AI controllers for testing (Signal Follower, Coast, Constant Accel)
-  - Live HUD reporting real collisions and cleared vehicles; LLM latency marked "Not connected"
-  - 50 unit and smoke tests passing across 10 test files
-- [x] **Phase 3: Strict Local Telemetry Layer (Completed)**
-  - Pure body-frame geometric sensors:
-    - Front sensor: 1-lane forward corridor with bumper-to-bumper gap (clamped at 0) and relative velocity
-    - Rear sensor: 1-lane rearward corridor with bumper-to-bumper gap and relative velocity
-    - Side sensors: Left and right adjacent lane clearance with blind-spot longitudinal margin
-    - Signal sensor: Current signal color and distance to approach stop line (null after crossing or > 60m)
-  - Unified relative velocity sign convention: negative = closing (danger), positive = opening
-  - Removal of Phase 1 own-speed field across JS validators, Pydantic models, docs, and tests
-  - Single source of truth JSON Schema (`contracts/telemetry.schema.json`) with `additionalProperties: false` at all levels
-  - Validation parity: Ajv Draft-07 (JS) and Pydantic v2 (Python) validated against shared golden fixtures
-  - Dashboard `TelemetryInspector` with single vehicle / full batch toggle, byte/token estimates, and live validation badge
-  - Optional canvas sensor detection zone visualizer
-  - Comprehensive leak & locality tests (rigid-transform invariance, canary injection, locality, denylist key scan)
-  - 67 passing Vitest tests + 20 passing Pytest tests
-- [x] **Phase 4: LLM Batch Decision Engine & Backend Integration (Completed)**
-  - Single batch LLM API call per decision tick for all active vehicles (zero retries)
-  - Strict local telemetry prompt compilation (zero global coordinates leaked)
-  - Transport-level `retries=0` and thread-safe call ledger auditing (`maxProviderRequestsPerTick <= 1`)
-  - Dual clock policies: Lockstep (reproducible benchmark) and Realtime (50 Hz continuous with decision age tracking)
-  - Live HUD displaying real LLM provider latency (ms), round-trip time (ms), and SAT collisions
-  - Prompt Inspector and Decision Inspector panels with live ledger audit
-  - 89 passing Vitest tests + 39 passing Pytest tests
+The project maintains rigorous test coverage with **128 total tests** across the entire stack:
+
+### Frontend Unit & Contract Tests (Vitest)
+```bash
+# From repository root
+npm test
+
+# Or directly in frontend/
+cd frontend && npm test
+```
+*Runs all 89 Vitest tests across 14 suites (physics determinism, OBB SAT collision transitions, Ajv schema verification, clock policies, and sensor locality).*
+
+### Backend & Invariant Tests (Pytest)
+```bash
+# From repository root
+npm run test:py
+
+# Or via pytest directly
+pytest backend -v
+```
+*Runs all 39 Pytest tests (Pydantic schema parity, zero-retry call ledger enforcement, single-flight locking, and prompt coordinate leak verification).*
+
+---
+
+## 📊 Evaluation & Baseline Controllers
+
+The dashboard allows side-by-side comparison between the LLM Batch Controller and traditional baseline heuristic controllers:
+
+| Controller | Description | Typical Throughput | Safety / Collisions |
+| :--- | :--- | :--- | :--- |
+| **Signal Follower** | Standard rule-based controller that obeys cyclic traffic lights. | Moderate | Zero collisions (clears when green) |
+| **Coast** | Idle engine; applies zero acceleration or braking. | Very low | Prone to blockages |
+| **Constant Accel** | Naive vehicle acceleration without situational awareness. | High risk | Guaranteed collisions |
+| **LLM Batch Controller** | Google Gemini (`gemini-3.1-flash-lite`) coordinating all 20 vehicles via local sensor telemetry. | Dynamic | Negotiates conflict points; audited via live HUD |
+
+---
+
+## 📜 Physics & Sensor Specifications
+
+| Parameter | Value | Rationale / Mathematical Bounds |
+| :--- | :--- | :--- |
+| **Simulation Step ($\Delta t$)** | $0.02\text{ s}$ ($50\text{ Hz}$) | Decoupled from 60 FPS animation via time accumulator |
+| **World Scale** | $10\text{ px/m}$ | $800 \times 800\text{ px} = 80 \times 80\text{ m}$ real-world intersection |
+| **Max Speed ($v_{\max}$)** | $13.5\text{ m/s}$ ($\approx 48.6\text{ km/h}$) | Standard urban intersection speed limit |
+| **Acceleration Limits** | $[-6.0\text{ m/s}^2, +3.0\text{ m/s}^2]$ | Real-world passenger vehicle deceleration & throttle bounds |
+| **Jerk Limit ($J_{\max}$)** | $8.0\text{ m/s}^3$ | Passenger ride comfort and realistic actuator response |
+| **Anti-Tunneling Proof** | $\Delta s_{\max} = 0.27\text{ m}$ | Half-car width is $0.95\text{ m} > 0.27\text{ m}$, mathematically preventing tunneling |
+| **Collision Geometry** | Oriented Bounding Box (OBB) | 2D Separating Axis Theorem with contact state transitions |
+
+---
+
+## 📄 License
+
+This project is licensed under the [MIT License](LICENSE).
